@@ -2,29 +2,50 @@ from manim import *
 import numpy as np
 
 class TreeNode(VGroup):
-    def __init__(self, label, color_char="B", **kwargs):
+    def __init__(self, label, color_char="B", radius=0.3, **kwargs):
         super().__init__(**kwargs)
-        color_map = {"B": BLACK, "R": RED, "O": ORANGE, "W": WHITE, "BLUE": BLUE, "G": GREEN}
+        color_map = {"B": BLACK, "R": RED, "O": ORANGE, "W": WHITE, "b": BLUE, "G": GREEN}
         fill_color = color_map.get(color_char, WHITE)
 
-        self.circle = Circle(radius=0.3, color=WHITE, stroke_width=3).set_fill(fill_color, opacity=1)
-        self.text = Text(label, font_size=24).move_to(self.circle.get_center())
+        self.radius = radius
+        self.circle = Circle(radius=self.radius, color=WHITE, stroke_width=3).set_fill(fill_color, opacity=1)
+        # Font size scales with radius
+        font_size = max(12, int(24 * radius / 0.3))
+        self.text = Text(label, font_size=font_size).move_to(self.circle.get_center())
 
         self.add(self.circle, self.text)
         self.label = label
         self.color_char = color_char
 
     def set_node_color(self, color_char):
-        color_map = {"B": BLACK, "R": RED, "O": ORANGE, "W": WHITE, "BLUE": BLUE, "G": GREEN}
+        color_map = {"B": BLACK, "R": RED, "O": ORANGE, "W": WHITE, "b": BLUE, "G": GREEN}
         self.circle.set_fill(color_map.get(color_char, WHITE), opacity=1)
         self.color_char = color_char
 
     def update_label(self, new_label):
         """Update the label and recreate the text object"""
         self.remove(self.text)
-        self.text = Text(new_label, font_size=24).move_to(self.circle.get_center())
+        # Font size scales with radius
+        font_size = max(12, int(24 * self.radius / 0.3))
+        self.text = Text(new_label, font_size=font_size).move_to(self.circle.get_center())
         self.add(self.text)
         self.label = new_label
+
+    def scale_node(self, scale_factor):
+        """Scale the node by a given factor"""
+        self.radius *= scale_factor
+        new_circle = Circle(radius=self.radius, color=WHITE, stroke_width=3)
+        new_circle.set_fill(self.circle.fill_color, opacity=1)
+        new_circle.move_to(self.circle.get_center())
+        
+        # Update font size based on new radius
+        font_size = max(12, int(24 * self.radius / 0.3))
+        new_text = Text(self.label, font_size=font_size).move_to(self.circle.get_center())
+        
+        self.remove(self.circle, self.text)
+        self.circle = new_circle
+        self.text = new_text
+        self.add(self.circle, self.text)
 
 class TreeArrow:
     def __init__(self, scene, tree_structure, color=YELLOW):
@@ -60,17 +81,18 @@ class TreeArrow:
             self.current_index = None
 
 class TreeStructure:
-    def __init__(self, scene):
+    def __init__(self, scene, radius=0.3, h_spacing=5.0, v_spacing=1.2, root_pos=None):
         self.scene = scene
         self.nodes = {}  # index -> TreeNode
         self.edges = {}  # (parent_index, child_index) -> Line
         self.tree_data = {}  # index -> (label, color)
         self.positions = {}  # index -> position
         
-        # Tree layout parameters
-        self.root_pos = ORIGIN + 2.3 * UP
-        self.level_height = 1.2
-        self.base_h_spacing = 5.0
+        # Tree layout parameters - now configurable
+        self.radius = radius
+        self.root_pos = root_pos if root_pos is not None else (ORIGIN + 2.3 * UP)
+        self.level_height = v_spacing
+        self.base_h_spacing = h_spacing
 
     def find_node_index(self, target_node):
         for index, node in self.nodes.items():
@@ -101,7 +123,7 @@ class TreeStructure:
             return  # Node already exists
         
         position = self.calculate_position(index, self._get_level(index))
-        node = TreeNode(label, color_char).move_to(position)
+        node = TreeNode(label, color_char, radius=self.radius).move_to(position)
         
         self.nodes[index] = node
         self.tree_data[index] = (label, color_char)
@@ -245,7 +267,7 @@ class TreeStructure:
         
         node = self.nodes[index]
         highlight_circle = Circle(
-            radius=0.5, 
+            radius=0.5 * (self.radius / 0.3), 
             color=color, 
             stroke_width=6
         ).move_to(node.get_center())
@@ -258,8 +280,63 @@ class TreeStructure:
         if highlight_circle:
             self.scene.play(FadeOut(highlight_circle), run_time=duration)
 
+    def move_tree(self, dx=0, dy=0, scale_factor=1.0, duration=1.5):
+        """
+        Move the entire tree by (dx, dy) and scale by scale_factor.
+        Positive dx moves right, positive dy moves up.
+        scale_factor affects radius and spacing.
+        """
+        # Update tree parameters
+        self.radius *= scale_factor
+        self.level_height *= scale_factor
+        self.base_h_spacing *= scale_factor
+        self.root_pos += RIGHT * dx + UP * dy
+        
+        # Prepare animations
+        node_animations = []
+        edge_animations = []
+        
+        # Move and scale all nodes
+        for index, node in self.nodes.items():
+            # Calculate new position
+            new_position = self.calculate_position(index, self._get_level(index))
+            
+            # Scale the node
+            if scale_factor != 1.0:
+                node.scale_node(scale_factor)
+            
+            # Animate movement
+            node_animations.append(node.animate.move_to(new_position))
+            
+            # Update stored position
+            self.positions[index] = new_position
+        
+        # Animate all edges to follow nodes
+        for (parent_idx, child_idx), edge in self.edges.items():
+            if parent_idx in self.nodes and child_idx in self.nodes:
+                parent_node = self.nodes[parent_idx]
+                child_node = self.nodes[child_idx]
+                
+                def create_edge_updater(edge_line, p_node, c_node):
+                    def update_edge(mob, alpha):
+                        start_point = p_node.get_bottom()
+                        end_point = c_node.get_top()
+                        edge_line.put_start_and_end_on(start_point, end_point)
+                        return mob
+                    return UpdateFromAlphaFunc(edge_line, update_edge)
+                
+                edge_animation = create_edge_updater(edge, parent_node, child_node)
+                edge_animations.append(edge_animation)
+        
+        # Execute all animations simultaneously
+        all_animations = node_animations + edge_animations
+        if all_animations:
+            self.scene.play(*all_animations, run_time=duration)
+
+
+
 def build_tree_from_list(tree_structure, data):
-    """Build tree from list representation"""
+    """Build tree from list data"""
     for i, item in enumerate(data, 1):
         if item is not None:
             color_char = item[0]
@@ -270,20 +347,16 @@ def build_tree_from_list(tree_structure, data):
     tree_structure.rebuild_edges()
 
 def collect_subtree_nodes(tree_structure, root_index):
-    """Collect all nodes in a subtree rooted at root_index"""
     subtree = []
-    
     def collect_recursive(index):
         if index in tree_structure.nodes:
             subtree.append(index)
-            collect_recursive(2 * index)      # left child
-            collect_recursive(2 * index + 1)  # right child
-    
+            collect_recursive(2 * index)      
+            collect_recursive(2 * index + 1)  
     collect_recursive(root_index)
     return subtree
 
 def is_in_subtree(node_index, root_index):
-    """Check if node_index is in the subtree rooted at root_index"""
     if node_index == root_index:
         return True
     
@@ -295,7 +368,7 @@ def is_in_subtree(node_index, root_index):
     return current == root_index
 
 def get_relative_path(node_index, root_index):
-    """Get the path from root_index to node_index as a list of 'L'/'R' moves"""
+    #Get the path from root_index to node_index as a list of 'L'/'R' moves
     if node_index == root_index:
         return []
     
@@ -372,21 +445,18 @@ def move_subtree(tree_structure, new_node_map, new_data_map, old_root, new_root)
         new_data_map[new_index] = tree_structure.tree_data[old_index]
         index_mapping[old_index] = new_index
 
-def left_rotate(scene, tree_structure, l_index):
+def left_rotate(scene, tree_structure, l_index, highlight=True):
 
     right_child_index = 2 * l_index + 1  # Right child of l
     
     if l_index not in tree_structure.nodes or right_child_index not in tree_structure.nodes:
         return
     
-    # # Show rotation text
-    rotation_text = Text("Left Rotation", font_size=36, color=YELLOW).to_edge(UP)
-    scene.play(Write(rotation_text), run_time=0.5)
-    
-    # # Highlight the nodes being rotated
-    l_highlight = tree_structure.highlight_node(l_index, color=RED, duration=0.3)
-    right_highlight = tree_structure.highlight_node(right_child_index, color=GREEN, duration=0.3)
-    scene.wait(0.5)
+    if highlight:
+        # Highlight the nodes being rotated
+        l_highlight = tree_structure.highlight_node(l_index, color=RED, duration=0.3)
+        right_highlight = tree_structure.highlight_node(right_child_index, color=GREEN, duration=0.3)
+        scene.wait(0.5)
     
     # Get the nodes involved in rotation
     l_node = tree_structure.nodes[l_index]
@@ -479,26 +549,22 @@ def left_rotate(scene, tree_structure, l_index):
 
     
     
-    # Remove highlights
-    tree_structure.remove_highlight(l_highlight, duration=0.3)
-    tree_structure.remove_highlight(right_highlight, duration=0.3)
-    
-    scene.play(FadeOut(rotation_text), run_time=0.3)
+    if highlight:
+        # Remove highlights
+        tree_structure.remove_highlight(l_highlight, duration=0.3)
+        tree_structure.remove_highlight(right_highlight, duration=0.3)
 
-def right_rotate(scene, tree_structure, r_index):
+def right_rotate(scene, tree_structure, r_index, highlight=True):
 
     l_index = 2 * r_index 
     if r_index not in tree_structure.nodes or l_index not in tree_structure.nodes:
         return
     
-    # Show rotation text
-    rotation_text = Text("Right Rotation", font_size=36, color=YELLOW).to_edge(UP)
-    scene.play(Write(rotation_text), run_time=0.5)
-    
-    # Highlight the nodes being rotated
-    r_highlight = tree_structure.highlight_node(r_index, color=RED, duration=0.3)
-    left_highlight = tree_structure.highlight_node(l_index, color=GREEN, duration=0.3)
-    scene.wait(0.5)
+    if highlight:
+        # Highlight the nodes being rotated
+        r_highlight = tree_structure.highlight_node(r_index, color=RED, duration=0.3)
+        left_highlight = tree_structure.highlight_node(l_index, color=GREEN, duration=0.3)
+        scene.wait(0.5)
     
     # Get the nodes involved in rotation
     l_node = tree_structure.nodes[l_index]
@@ -582,11 +648,10 @@ def right_rotate(scene, tree_structure, r_index):
     # Rebuild edges to match new tree structure
     tree_structure.rebuild_edges()
     
-    # Remove highlights
-    tree_structure.remove_highlight(r_highlight, duration=0.3)
-    tree_structure.remove_highlight(left_highlight, duration=0.3)
-    
-    scene.play(FadeOut(rotation_text), run_time=0.3)
+    if highlight:
+        # Remove highlights
+        tree_structure.remove_highlight(r_highlight, duration=0.3)
+        tree_structure.remove_highlight(left_highlight, duration=0.3)
 
 def left_swap(scene, tree_structure, x_index):
     """Simple left swap - just exchange positions of x and its right child"""
@@ -594,10 +659,6 @@ def left_swap(scene, tree_structure, x_index):
     
     if x_index not in tree_structure.nodes or y_index not in tree_structure.nodes:
         return
-    
-    # Show swap text
-    swap_text = Text("Left Swap (Position Only)", font_size=32, color=BLUE).to_edge(UP)
-    scene.play(Write(swap_text), run_time=0.5)
     
     # Highlight the nodes being swapped
     x_highlight = tree_structure.highlight_node(x_index, color=RED, duration=0.3)
@@ -614,8 +675,6 @@ def left_swap(scene, tree_structure, x_index):
     # Remove highlights
     tree_structure.remove_highlight(x_highlight, duration=0.3)
     tree_structure.remove_highlight(y_highlight, duration=0.3)
-    
-    scene.play(FadeOut(swap_text), run_time=0.3)
 
 def right_swap(scene, tree_structure, y_index):
     """Simple right swap - just exchange positions of y and its left child"""
@@ -623,10 +682,6 @@ def right_swap(scene, tree_structure, y_index):
     
     if y_index not in tree_structure.nodes or x_index not in tree_structure.nodes:
         return
-    
-    # Show swap text
-    swap_text = Text("Right Swap (Position Only)", font_size=32, color=BLUE).to_edge(UP)
-    scene.play(Write(swap_text), run_time=0.5)
     
     # Highlight the nodes being swapped
     y_highlight = tree_structure.highlight_node(y_index, color=RED, duration=0.3)
@@ -643,8 +698,6 @@ def right_swap(scene, tree_structure, y_index):
     # Remove highlights
     tree_structure.remove_highlight(y_highlight, duration=0.3)
     tree_structure.remove_highlight(x_highlight, duration=0.3)
-    
-    scene.play(FadeOut(swap_text), run_time=0.3)
 
 def swap_node_values(scene, tree_structure, index1, index2, duration=1.5):
     """Swap values between two nodes with animation"""
@@ -800,11 +853,6 @@ def delete_node(scene, tree_structure, target_index):
     if target_index not in tree_structure.nodes:
         return
     
-    # Show deletion text
-    target_label = tree_structure.tree_data[target_index][0]
-    deletion_text = Text(f"Deleting node {target_label}", font_size=32, color=RED).to_edge(UP)
-    scene.play(Write(deletion_text), run_time=0.8)
-    
     # Highlight target
     target_highlight = tree_structure.highlight_node(target_index, color=RED, duration=0.5)
     scene.wait(1)
@@ -816,8 +864,6 @@ def delete_node(scene, tree_structure, target_index):
     
     if num_children == 0:
         # Case 1: No children - simply delete the node
-        case_text = Text("Case 1: No children - simple deletion", font_size=24, color=YELLOW).next_to(deletion_text, DOWN)
-        scene.play(Write(case_text), run_time=0.8)
         scene.wait(1)
         
         deletion_mark = mark_for_deletion(scene, tree_structure, target_index, duration=0.8)
@@ -825,15 +871,10 @@ def delete_node(scene, tree_structure, target_index):
         
         scene.play(FadeOut(deletion_mark), run_time=0.3)
         tree_structure.remove_node(target_index, animate=True)
-        scene.play(FadeOut(case_text), run_time=0.5)
 
     if num_children == 1:
         # Case 2: One child - delete node and move subtree up
         child_index = left_child if left_child in tree_structure.nodes else right_child
-        child_label = tree_structure.tree_data[child_index][0]
-        
-        case_text = Text(f"Case 2: One child ({child_label}) - move subtree up", font_size=24, color=YELLOW).next_to(deletion_text, DOWN)
-        scene.play(Write(case_text), run_time=0.8)
         
         # Highlight the child
         child_highlight = tree_structure.highlight_node(child_index, color=GREEN, duration=0.5)
@@ -844,11 +885,6 @@ def delete_node(scene, tree_structure, target_index):
         scene.wait(1)
         scene.play(FadeOut(deletion_mark), run_time=0.3)
         tree_structure.remove_node(target_index, animate=True)
-        
-        # Move the subtree up
-        scene.play(Transform(case_text, 
-                Text("Moving subtree up...", font_size=24, color=BLUE).next_to(deletion_text, DOWN)), 
-                run_time=0.5)
         
         # Prepare new node mapping
         new_node_map = {}
@@ -936,48 +972,28 @@ def delete_node(scene, tree_structure, target_index):
         if new_edges:
             scene.play(*[Create(edge) for edge in new_edges], run_time=0.5)
         
-        scene.play(FadeOut(case_text), run_time=0.5)
-        
     else:
         # Case 3: Two children - find successor, swap values, then delete successor
         successor_index = find_inorder_successor(tree_structure, target_index)
         
         if successor_index:
-            successor_label = tree_structure.tree_data[successor_index][0]
-            case_text = Text(f"Case 3: Two children - find successor ({successor_label})", font_size=24, color=YELLOW).next_to(deletion_text, DOWN)
-            scene.play(Write(case_text), run_time=0.8)
-            
             # Highlight the successor
             successor_highlight = tree_structure.highlight_node(successor_index, color=GREEN, duration=0.5)
             scene.wait(1)
             
-            # Show successor finding process
-            scene.play(Transform(case_text, 
-                               Text("Finding successor: go right, then left until no more left", font_size=20, color=BLUE).next_to(deletion_text, DOWN)), 
-                               run_time=0.8)
             scene.wait(1.5)
             
             # Swap values
-            scene.play(Transform(case_text, 
-                               Text("Swapping values with successor...", font_size=24, color=YELLOW).next_to(deletion_text, DOWN)), 
-                               run_time=0.5)
-            
             swap_node_values(scene, tree_structure, target_index, successor_index, duration=1.5)
             scene.wait(1)
             
             # Now delete the successor (which will have at most one child)
-            scene.play(Transform(case_text, 
-                               Text("Now deleting successor node...", font_size=24, color=RED).next_to(deletion_text, DOWN)), 
-                               run_time=0.5)
-            
             tree_structure.remove_highlight(successor_highlight, duration=0.3)
-            scene.play(FadeOut(case_text), run_time=0.5)
             
             # Recursively delete the successor (it will be case 1 or 2)
             delete_node(scene, tree_structure, successor_index)
     
     tree_structure.remove_highlight(target_highlight, duration=0.3)
-    scene.play(FadeOut(deletion_text), run_time=0.5)
 
 def show_deletion_steps(scene, tree_structure, target_index, successor_index=None):
     """Demonstrate complete deletion process using proper binary tree deletion"""
@@ -985,9 +1001,6 @@ def show_deletion_steps(scene, tree_structure, target_index, successor_index=Non
 
 def animate_rebalancing(scene, tree_structure, affected_indices, duration=2.0):
     """Animate rebalancing process"""
-    rebalance_text = Text("Rebalancing tree...", font_size=32, color=BLUE).to_edge(UP)
-    scene.play(Write(rebalance_text), run_time=0.5)
-    
     # Highlight affected nodes
     highlights = []
     colors = [BLUE, PURPLE, ORANGE, PINK, TEAL]
@@ -1004,8 +1017,6 @@ def animate_rebalancing(scene, tree_structure, affected_indices, duration=2.0):
     # Remove highlights
     for highlight in highlights:
         tree_structure.remove_highlight(highlight, duration=0.2)
-    
-    scene.play(FadeOut(rebalance_text), run_time=0.5)
 
 def change_colors(scene, tree_structure, indices, colors):
     """Change colors of multiple nodes"""
@@ -1020,69 +1031,3 @@ def change_colors(scene, tree_structure, indices, colors):
     
     if animations:
         scene.play(*animations, run_time=0.4)
-
-class RedBlackTreeDeletionDemo(Scene):
-    def construct(self):
-        # Create tree structure
-        tree = TreeStructure(self)
-        
-        # Title
-        title = Text("Red-Black Tree Operations Demo", font_size=40, color=WHITE)
-        title.to_edge(UP)
-        self.play(Write(title), run_time=1)
-        self.wait(1)
-        
-        # Build tree
-        data = ["B7", "R4", "R10", None, "B5", "B8", "B12", None, None, "R3"]
-        build_tree_from_list(tree, data)
-        self.wait(1)
-        
-        # Demo 1: Highlighting
-        demo_text = Text("Demo 1: Node highlighting", font_size=28, color=YELLOW).to_edge(DOWN)
-        self.play(Write(demo_text), run_time=0.8)
-        
-        highlight1 = tree.highlight_node(2, color=YELLOW, duration=0.5)
-        self.wait(0.5)
-        highlight2 = tree.highlight_node(5, color=GREEN, duration=0.5)
-        self.wait(1)
-        
-        tree.remove_highlight(highlight1)
-        tree.remove_highlight(highlight2)
-        self.play(FadeOut(demo_text), run_time=0.5)
-        self.wait(0.5)
-        
-        # Demo 2: Value swapping
-        demo_text = Text("Demo 2: Value swapping", font_size=28, color=YELLOW).to_edge(DOWN)
-        self.play(Write(demo_text), run_time=0.8)
-        
-        swap_node_values(self, tree, 2, 5, duration=1.5)
-        self.wait(1)
-        self.play(FadeOut(demo_text), run_time=0.5)
-        
-        # Demo 3: Rotations
-        demo_text = Text("Demo 3: Tree rotations", font_size=28, color=YELLOW).to_edge(DOWN)
-        self.play(Write(demo_text), run_time=0.8)
-        
-        left_rotate(self, tree, 1)
-        self.wait(1)
-        right_rotate(self, tree, 2)
-        self.wait(1)
-        self.play(FadeOut(demo_text), run_time=0.5)
-        
-        # Demo 4: Deletion
-        demo_text = Text("Demo 4: Node deletion", font_size=28, color=YELLOW).to_edge(DOWN)
-        self.play(Write(demo_text), run_time=0.8)
-        
-        show_deletion_steps(self, tree, target_index=2)
-        self.wait(1)
-        self.play(FadeOut(demo_text), run_time=0.5)
-        
-        # Demo 5: Rebalancing
-        demo_text = Text("Demo 5: Rebalancing animation", font_size=28, color=YELLOW).to_edge(DOWN)
-        self.play(Write(demo_text), run_time=0.8)
-        
-        animate_rebalancing(self, tree, [1, 4, 6], duration=2.5)
-        self.play(FadeOut(demo_text), run_time=0.5)
-        
-        self.play(FadeOut(title), run_time=1)
-        self.wait(2)
